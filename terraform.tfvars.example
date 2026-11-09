@@ -1,0 +1,4 @@
+alert_email = "you@example.com"
+mode        = "enforce"
+# Set to false if GuardDuty is already enabled in this Region
+create_detector = true
