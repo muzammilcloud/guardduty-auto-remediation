@@ -120,3 +120,70 @@ def test_alert_only_mode(aws, monkeypatch):
     iam, key = make_user()
     result = aws.lambda_handler(key_event("victim", key), None)
     assert result["action"].startswith("DRY RUN")
+
+
+def s3_event(ftype, bucket=None, sample=False):
+    resource = {"resourceType": "S3Bucket"}
+    if bucket:
+        resource["s3BucketDetails"] = [{"name": bucket}]
+    return {"detail": {
+        "id": "f-3", "type": ftype, "severity": 2, "accountId": "123456789012",
+        "service": {"additionalInfo": {"sample": sample}}, "resource": resource}}
+
+
+def make_bucket(tags=None):
+    s3 = boto3.client("s3", region_name=REGION)
+    s3.create_bucket(Bucket="leaky-bucket")
+    s3.put_public_access_block(Bucket="leaky-bucket", PublicAccessBlockConfiguration={
+        "BlockPublicAcls": False, "IgnorePublicAcls": False,
+        "BlockPublicPolicy": False, "RestrictPublicBuckets": False})
+    if tags:
+        s3.put_bucket_tagging(Bucket="leaky-bucket", Tagging={"TagSet": tags})
+    return s3
+
+
+def test_blocks_public_bucket(aws):
+    s3 = make_bucket()
+    result = aws.lambda_handler(s3_event("Policy:S3/BucketBlockPublicAccessDisabled", "leaky-bucket"), None)
+    assert result["action"].startswith("Turned on Block Public Access")
+    cfg = s3.get_public_access_block(Bucket="leaky-bucket")["PublicAccessBlockConfiguration"]
+    assert all(cfg.values())
+
+
+def test_public_bucket_skip_tag(aws):
+    s3 = make_bucket(tags=[{"Key": "AutoRemediation", "Value": "skip"}])
+    result = aws.lambda_handler(s3_event("Policy:S3/BucketAnonymousAccessGranted", "leaky-bucket"), None)
+    assert result["action"].startswith("Skipped")
+    cfg = s3.get_public_access_block(Bucket="leaky-bucket")["PublicAccessBlockConfiguration"]
+    assert not any(cfg.values())
+
+
+def test_public_bucket_sample_is_dry_run(aws):
+    s3 = make_bucket()
+    result = aws.lambda_handler(s3_event("Policy:S3/BucketPublicAccessGranted", "leaky-bucket", sample=True), None)
+    assert result["action"].startswith("DRY RUN")
+
+
+def test_account_block_public_access(aws):
+    result = aws.lambda_handler(s3_event("Policy:S3/AccountBlockPublicAccessDisabled"), None)
+    assert result["action"].startswith("Turned on account-level")
+    cfg = boto3.client("s3control", region_name=REGION).get_public_access_block(
+        AccountId="123456789012")["PublicAccessBlockConfiguration"]
+    assert all(cfg.values())
+
+
+def test_restarts_cloudtrail(aws):
+    s3 = boto3.client("s3", region_name=REGION)
+    s3.create_bucket(Bucket="trail-logs")
+    ct = boto3.client("cloudtrail", region_name=REGION)
+    ct.create_trail(Name="main-trail", S3BucketName="trail-logs")
+    ct.start_logging(Name="main-trail")
+    ct.stop_logging(Name="main-trail")
+    event = {"detail": {
+        "id": "f-4", "type": "Stealth:IAMUser/CloudTrailLoggingDisabled", "severity": 2,
+        "service": {"additionalInfo": {}},
+        "resource": {"resourceType": "AccessKey", "accessKeyDetails": {
+            "accessKeyId": "AKIAEXAMPLE", "userName": "admin", "userType": "IAMUser"}}}}
+    result = aws.lambda_handler(event, None)
+    assert result["action"].startswith("Restarted logging")
+    assert ct.get_trail_status(Name="main-trail")["IsLogging"] is True
