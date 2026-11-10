@@ -1,10 +1,17 @@
-# GuardDuty Auto-Remediation with Terraform
+# Automatic Security Remediation for AWS
 
-Automatically respond to high-severity Amazon GuardDuty findings:
+Fix common AWS security incidents in seconds, without waiting for a human:
 
-- **Leaked IAM user access key** → the key is deactivated within seconds.
-- **EC2 instance acting maliciously** (crypto mining, C&C traffic, Tor client) → the instance is moved to an isolation security group with no inbound or outbound rules and tagged `SecurityStatus=Quarantined`.
-- **Everything else** → an email alert through Amazon SNS, no automatic change.
+| Incident | Automatic response |
+| --- | --- |
+| Leaked IAM user access key used maliciously | Key is deactivated |
+| EC2 instance mining crypto, talking to a C&C server, or using Tor | Instance is isolated with an empty security group and tagged |
+| S3 bucket made public | Block Public Access is turned back on |
+| Account-level S3 Block Public Access disabled | Turned back on |
+| CloudTrail logging stopped (a common attacker cover-up) | Logging is restarted |
+| Everything else (inbound attacks, role credentials, exempted resources) | Email alert only |
+
+Amazon GuardDuty detects the problem; this project fixes it.
 
 Built with Amazon GuardDuty, Amazon EventBridge, AWS Lambda (Python 3.13), Amazon SNS, and Terraform.
 
@@ -16,6 +23,7 @@ Built with Amazon GuardDuty, Amazon EventBridge, AWS Lambda (Python 3.13), Amazo
 | Sample findings are always dry runs | `create-sample-findings` never changes real resources |
 | `AutoRemediation=skip` tag | Exempt break-glass users or critical instances |
 | Inbound findings are alert-only | An instance being brute-forced is the victim, not the attacker |
+| `AutoRemediation=skip` works on S3 buckets too | Keep intentionally public buckets (static sites) public |
 | Assumed-role credentials are alert-only | Temporary credentials can't be deactivated; revoke sessions manually |
 
 ## Deploy

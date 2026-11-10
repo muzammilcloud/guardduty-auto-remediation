@@ -45,6 +45,22 @@ data "aws_iam_policy_document" "remediation" {
   }
 
   statement {
+    sid = "BlockPublicS3"
+    actions = [
+      "s3:PutBucketPublicAccessBlock",
+      "s3:GetBucketTagging",
+      "s3:PutAccountPublicAccessBlock",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "RestartCloudTrail"
+    actions   = ["cloudtrail:DescribeTrails", "cloudtrail:GetTrailStatus", "cloudtrail:StartLogging"]
+    resources = ["*"]
+  }
+
+  statement {
     sid       = "Notify"
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.alerts.arn]
