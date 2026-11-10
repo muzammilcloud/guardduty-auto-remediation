@@ -1,17 +1,23 @@
-"""Auto-remediate high-severity GuardDuty findings.
+"""Automatically remediate AWS security findings from GuardDuty.
 
-- AccessKey findings for IAM users: deactivate the access key.
-- Instance findings where the instance is the attacker: move it to an
-  isolation security group with no inbound or outbound rules.
-Every finding produces an SNS notification describing what was done.
+- Leaked IAM user access key: deactivate the key.
+- EC2 instance acting as an attacker: isolate it with an empty security group.
+- S3 bucket or account made public: turn Block Public Access back on.
+- CloudTrail logging stopped: start logging again.
+Everything else is alert-only. Every finding produces an SNS notification.
 """
 import json
 import os
 
 import boto3
 
+from botocore.exceptions import ClientError
+
 iam = boto3.client("iam")
 ec2 = boto3.client("ec2")
+s3 = boto3.client("s3")
+s3control = boto3.client("s3control")
+cloudtrail = boto3.client("cloudtrail")
 sns = boto3.client("sns")
 
 MODE = os.environ.get("MODE", "enforce")  # "enforce" or "alert-only"
@@ -28,6 +34,20 @@ ISOLATE_PREFIXES = (
     "UnauthorizedAccess:EC2/TorClient",
 )
 
+PUBLIC_BUCKET_TYPES = (
+    "Policy:S3/BucketBlockPublicAccessDisabled",
+    "Policy:S3/BucketAnonymousAccessGranted",
+    "Policy:S3/BucketPublicAccessGranted",
+)
+ACCOUNT_PUBLIC_TYPE = "Policy:S3/AccountBlockPublicAccessDisabled"
+CLOUDTRAIL_STOPPED_TYPE = "Stealth:IAMUser/CloudTrailLoggingDisabled"
+BLOCK_ALL = {
+    "BlockPublicAcls": True,
+    "IgnorePublicAcls": True,
+    "BlockPublicPolicy": True,
+    "RestrictPublicBuckets": True,
+}
+
 
 def lambda_handler(event, context):
     finding = event["detail"]
@@ -36,8 +56,17 @@ def lambda_handler(event, context):
 
     resource = finding.get("resource", {})
     resource_type = resource.get("resourceType")
+    finding_type = finding.get("type", "")
 
-    if resource_type == "AccessKey":
+    # Route by finding type first: these findings describe what was changed,
+    # not who changed it, so the fix targets the changed resource.
+    if finding_type == CLOUDTRAIL_STOPPED_TYPE:
+        action = handle_cloudtrail_stopped(dry_run)
+    elif finding_type == ACCOUNT_PUBLIC_TYPE:
+        action = handle_account_public(finding.get("accountId"), dry_run)
+    elif finding_type in PUBLIC_BUCKET_TYPES:
+        action = handle_public_bucket(resource, dry_run)
+    elif resource_type == "AccessKey":
         action = handle_access_key(resource.get("accessKeyDetails", {}), dry_run)
     elif resource_type == "Instance":
         action = handle_instance(finding, dry_run)
@@ -99,6 +128,48 @@ def handle_instance(finding, dry_run):
         ],
     )
     return f"Isolated instance {instance_id} with security group {sg_id}"
+
+
+def handle_public_bucket(resource, dry_run):
+    buckets = resource.get("s3BucketDetails") or []
+    if not buckets:
+        return "Alert only: finding has no bucket details"
+    bucket = buckets[0]["name"]
+    if dry_run:
+        return f"DRY RUN: would turn on Block Public Access for bucket {bucket}"
+
+    try:
+        tags = s3.get_bucket_tagging(Bucket=bucket)["TagSet"]
+    except ClientError as err:
+        if err.response["Error"]["Code"] != "NoSuchTagSet":
+            raise
+        tags = []
+    if any((t["Key"], t["Value"]) == SKIP_TAG for t in tags):
+        return f"Skipped: bucket {bucket} is tagged AutoRemediation=skip"
+
+    s3.put_public_access_block(Bucket=bucket, PublicAccessBlockConfiguration=BLOCK_ALL)
+    return f"Turned on Block Public Access for bucket {bucket}"
+
+
+def handle_account_public(account_id, dry_run):
+    if dry_run:
+        return f"DRY RUN: would turn on account-level Block Public Access for {account_id}"
+    s3control.put_public_access_block(AccountId=account_id, PublicAccessBlockConfiguration=BLOCK_ALL)
+    return f"Turned on account-level Block Public Access for {account_id}"
+
+
+def handle_cloudtrail_stopped(dry_run):
+    restarted = []
+    for trail in cloudtrail.describe_trails(includeShadowTrails=False)["trailList"]:
+        arn = trail["TrailARN"]
+        if not cloudtrail.get_trail_status(Name=arn)["IsLogging"]:
+            if not dry_run:
+                cloudtrail.start_logging(Name=arn)
+            restarted.append(trail["Name"])
+    if not restarted:
+        return "Alert only: all trails in this Region are already logging"
+    verb = "DRY RUN: would restart" if dry_run else "Restarted"
+    return f"{verb} logging for trail(s): {', '.join(restarted)}. Review who stopped it."
 
 
 def get_or_create_quarantine_sg(vpc_id):
