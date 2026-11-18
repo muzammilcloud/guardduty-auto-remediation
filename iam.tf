@@ -23,7 +23,7 @@ resource "aws_iam_role_policy_attachment" "logs" {
 data "aws_iam_policy_document" "remediation" {
   statement {
     sid       = "DisableIamUserKeys"
-    actions   = ["iam:UpdateAccessKey", "iam:ListUserTags"]
+    actions   = ["iam:UpdateAccessKey", "iam:ListUserTags", "iam:PutUserPolicy"]
     resources = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/*"]
   }
 

@@ -4,7 +4,7 @@ Fix common AWS security incidents in seconds, without waiting for a human:
 
 | Incident | Automatic response |
 | --- | --- |
-| Leaked IAM user access key used maliciously | Key is deactivated |
+| Leaked IAM user access key used maliciously | Key is deactivated, and temporary sessions created from it are revoked |
 | EC2 instance mining crypto, talking to a C&C server, or using Tor | Instance is isolated with an empty security group and tagged |
 | S3 bucket made public | Block Public Access is turned back on |
 | Account-level S3 Block Public Access disabled | Turned back on |
@@ -25,6 +25,16 @@ Built with Amazon GuardDuty, Amazon EventBridge, AWS Lambda (Python 3.13), Amazo
 | Inbound findings are alert-only | An instance being brute-forced is the victim, not the attacker |
 | `AutoRemediation=skip` works on S3 buckets too | Keep intentionally public buckets (static sites) public |
 | Assumed-role credentials are alert-only | Temporary credentials can't be deactivated; revoke sessions manually |
+
+## Hardening (thanks to community feedback)
+
+Two gaps were pointed out by Mohammed Abadi after the first version, and both are now closed:
+
+**1. Existing sessions keep working after a key is deactivated.**
+If an attacker called `sts:GetSessionToken` before the key was disabled, those temporary credentials stay valid until they expire. The function now also attaches an inline policy, `AutoRemediation-RevokeOlderSessions`, that denies every request made with temporary credentials issued before the remediation time (`aws:TokenIssueTime`). Delete the policy once the incident is closed.
+
+**2. The skip tag can be abused.**
+An attacker with `iam:TagUser` or `ec2:CreateTags` could tag their own identity `AutoRemediation=skip` before the function runs. [`policies/protect-skip-tag-scp.json`](policies/protect-skip-tag-scp.json) is a service control policy that lets only the `SecurityAdmin` role add or remove that tag. Attach it in AWS Organizations and change the role name to match yours. If you don't use Organizations, add the same statements as a permissions boundary or to your IAM policies.
 
 ## Deploy
 
