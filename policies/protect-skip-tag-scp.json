@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlySecurityCanManageSkipTagOnIam",
+      "Effect": "Deny",
+      "Action": ["iam:TagUser", "iam:UntagUser", "iam:TagRole", "iam:UntagRole"],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": { "aws:TagKeys": ["AutoRemediation"] },
+        "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::*:role/SecurityAdmin" }
+      }
+    },
+    {
+      "Sid": "OnlySecurityCanManageSkipTagOnEc2",
+      "Effect": "Deny",
+      "Action": ["ec2:CreateTags", "ec2:DeleteTags"],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEquals": { "aws:TagKeys": ["AutoRemediation"] },
+        "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::*:role/SecurityAdmin" }
+      }
+    }
+  ]
+}
