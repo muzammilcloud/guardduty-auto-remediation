@@ -63,6 +63,24 @@ def test_deactivates_iam_user_key(aws):
     assert iam.list_access_keys(UserName="victim")["AccessKeyMetadata"][0]["Status"] == "Inactive"
 
 
+def test_revokes_older_sessions(aws):
+    import json as _json
+    iam, key = make_user()
+    aws.lambda_handler(key_event("victim", key), None)
+    doc = iam.get_user_policy(UserName="victim", PolicyName="AutoRemediation-RevokeOlderSessions")["PolicyDocument"]
+    if isinstance(doc, str):
+        doc = _json.loads(doc)
+    stmt = doc["Statement"][0]
+    assert stmt["Effect"] == "Deny"
+    assert "aws:TokenIssueTime" in stmt["Condition"]["DateLessThan"]
+
+
+def test_skip_tag_user_gets_no_revoke_policy(aws):
+    iam, key = make_user(tags=[{"Key": "AutoRemediation", "Value": "skip"}])
+    aws.lambda_handler(key_event("victim", key), None)
+    assert iam.list_user_policies(UserName="victim")["PolicyNames"] == []
+
+
 def test_sample_finding_is_dry_run(aws):
     iam, key = make_user()
     result = aws.lambda_handler(key_event("victim", key, sample=True), None)
