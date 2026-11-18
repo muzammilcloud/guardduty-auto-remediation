@@ -8,6 +8,7 @@ Everything else is alert-only. Every finding produces an SNS notification.
 """
 import json
 import os
+from datetime import datetime, timezone
 
 import boto3
 
@@ -24,6 +25,7 @@ MODE = os.environ.get("MODE", "enforce")  # "enforce" or "alert-only"
 TOPIC_ARN = os.environ["TOPIC_ARN"]
 QUARANTINE_SG_NAME = os.environ.get("QUARANTINE_SG_NAME", "guardduty-quarantine")
 SKIP_TAG = ("AutoRemediation", "skip")
+REVOKE_POLICY_NAME = "AutoRemediation-RevokeOlderSessions"
 
 # Finding families where the instance itself is behaving maliciously.
 ISOLATE_PREFIXES = (
@@ -93,7 +95,32 @@ def handle_access_key(details, dry_run):
         return f"Skipped: user {user} is tagged AutoRemediation=skip"
 
     iam.update_access_key(UserName=user, AccessKeyId=key_id, Status="Inactive")
-    return f"Deactivated access key {key_id} for user {user}"
+    revoke_older_sessions(user)
+    return (
+        f"Deactivated access key {key_id} for user {user} "
+        f"and revoked temporary sessions issued before now"
+    )
+
+
+def revoke_older_sessions(user):
+    """Deny every request made with temporary credentials issued before now.
+
+    Deactivating a key does not end sessions an attacker already created with
+    sts:GetSessionToken. aws:TokenIssueTime is only present on temporary
+    credentials, so this policy blocks those sessions without affecting
+    anything the user does later with fresh credentials.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Deny",
+            "Action": "*",
+            "Resource": "*",
+            "Condition": {"DateLessThan": {"aws:TokenIssueTime": now}},
+        }],
+    }
+    iam.put_user_policy(UserName=user, PolicyName=REVOKE_POLICY_NAME, PolicyDocument=json.dumps(policy))
 
 
 def handle_instance(finding, dry_run):
